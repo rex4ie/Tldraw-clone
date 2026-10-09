@@ -1,0 +1,6 @@
+{
+  "name": "My Board",
+  "description": "My Board - Infinite whiteboard and vector canvas",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

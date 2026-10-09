@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-vazir: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-draw: 'Shantell Sans', 'Caveat', cursive, sans-serif;
+    --font-sans: 'Vazirmatn', 'Inter', system-ui, -apple-system, sans-serif;
+    --font-serif: 'Source Serif 4', Georgia, serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font-vazir);
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+}
+
+.font-vazir {
+  font-family: var(--font-vazir) !important;
+}
+
+.font-draw {
+  font-family: var(--font-draw) !important;
+}
+
+.font-sans-canvas {
+  font-family: var(--font-sans) !important;
+}
+
+.font-serif-canvas {
+  font-family: var(--font-serif) !important;
+}
+
+.font-mono-canvas {
+  font-family: var(--font-mono) !important;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(150, 150, 150, 0.3);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 150, 150, 0.5);
+}
+
+/* Dot grid background utilities */
+.bg-dots-light {
+  background-image: radial-gradient(circle, #d1d5db 1.2px, transparent 1.2px);
+}
+.bg-dots-dark {
+  background-image: radial-gradient(circle, #3f3f46 1.3px, transparent 1.3px);
+}
+.bg-dots-midnight {
+  background-image: radial-gradient(circle, #334155 1.3px, transparent 1.3px);
+}
+.bg-dots-sepia {
+  background-image: radial-gradient(circle, #cfc4b0 1.3px, transparent 1.3px);
+}
+
+.bg-grid-light {
+  background-image: linear-gradient(to right, #e5e7eb 1px, transparent 1px),
+                    linear-gradient(to bottom, #e5e7eb 1px, transparent 1px);
+}
+.bg-grid-dark {
+  background-image: linear-gradient(to right, #27272a 1px, transparent 1px),
+                    linear-gradient(to bottom, #27272a 1px, transparent 1px);
+}
+.bg-grid-midnight {
+  background-image: linear-gradient(to right, #1e293b 1px, transparent 1px),
+                    linear-gradient(to bottom, #1e293b 1px, transparent 1px);
+}
+.bg-grid-sepia {
+  background-image: linear-gradient(to right, #e8dfcf 1px, transparent 1px),
+                    linear-gradient(to bottom, #e8dfcf 1px, transparent 1px);
+}
+
