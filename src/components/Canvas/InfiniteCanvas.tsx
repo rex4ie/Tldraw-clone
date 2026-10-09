@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { useCanvas } from '../../context/CanvasContext';
-import { Point, Shape, BoundingBox } from '../../types/canvas';
+import { Point, Shape, BoundingBox, StrokeSize } from '../../types/canvas';
 import { screenToCanvas, getShapeBounds, getCombinedBounds, doBoundsIntersect, snapValue } from '../../utils/math';
 import { ShapeRenderer } from './ShapeRenderer';
 import { SelectionBox } from './SelectionBox';
@@ -26,6 +26,7 @@ export const InfiniteCanvas: React.FC = () => {
     gridMode,
     snapToGrid,
     currentStyle,
+    setCurrentStyle,
     editingTextId,
     laserTrail,
     alignmentGuides,
@@ -61,6 +62,27 @@ export const InfiniteCanvas: React.FC = () => {
   const isCtrlPressedRef = useRef(false);
   const lastPointerCanvasPtRef = useRef<Point | null>(null);
   const lastShiftKeyRef = useRef(false);
+
+  const SIZES: StrokeSize[] = ['s', 'm', 'l', 'xl'];
+  const cameraRef = useRef(camera);
+  cameraRef.current = camera;
+  const shapesRef = useRef(shapes);
+  shapesRef.current = shapes;
+  const selectedIdsRef = useRef(selectedIds);
+  selectedIdsRef.current = selectedIds;
+  const editingTextIdRef = useRef(editingTextId);
+  editingTextIdRef.current = editingTextId;
+  const altWheelAccumulatorRef = useRef(0);
+  const wheelHistoryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const pushHistoryAfterWheel = () => {
+    if (wheelHistoryTimeoutRef.current) {
+      clearTimeout(wheelHistoryTimeoutRef.current);
+    }
+    wheelHistoryTimeoutRef.current = setTimeout(() => {
+      setShapes((s) => s, true);
+    }, 300);
+  };
 
   // Listen for Ctrl / Cmd key press while transforming to dynamically toggle Wrap Text
   useEffect(() => {
@@ -104,15 +126,160 @@ export const InfiniteCanvas: React.FC = () => {
     };
   }, [editingTextId]);
 
-  // Non-passive native wheel listener for reliable Ctrl + Scroll Zoom without browser zoom interference
+  // Non-passive native wheel listener for zoom, object resizing, thickness adjustment, and horizontal/vertical scrolling
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const onWheelNative = (e: WheelEvent) => {
       e.preventDefault();
-      if (e.ctrlKey || e.metaKey) {
-        // Zoom on Ctrl + Scroll (or Pinch gesture)
+
+      const activeEl = document.activeElement;
+      if (editingTextIdRef.current && (activeEl?.tagName === 'TEXTAREA' || activeEl?.tagName === 'INPUT')) {
+        return;
+      }
+
+      const isCtrl = e.ctrlKey || e.metaKey;
+      const isAlt = e.altKey;
+      const isShift = e.shiftKey;
+      const currentCamera = cameraRef.current;
+      const currentShapes = shapesRef.current;
+      const mouseCanvasPt = screenToCanvas({ x: e.clientX, y: e.clientY }, currentCamera);
+
+      // Find if an object is hovered under the cursor (topmost shape first)
+      const hoveredShape = [...currentShapes].reverse().find((s) => {
+        const bounds = getShapeBounds(s);
+        return (
+          mouseCanvasPt.x >= bounds.minX &&
+          mouseCanvasPt.x <= bounds.maxX &&
+          mouseCanvasPt.y >= bounds.minY &&
+          mouseCanvasPt.y <= bounds.maxY
+        );
+      });
+
+      // 1. HOVERED OBJECT + ALT + SCROLL -> CHANGE THICKNESS
+      // "If they do it holding alt, it changes the thickness for the objects that support that (text,shapes...)"
+      if (isAlt && hoveredShape && !hoveredShape.isLocked) {
+        altWheelAccumulatorRef.current += e.deltaY;
+        if (Math.abs(altWheelAccumulatorRef.current) >= 20) {
+          const isIncreasing = altWheelAccumulatorRef.current < 0; // scroll up = increase thickness
+          altWheelAccumulatorRef.current = 0;
+
+          const isSelected = selectedIdsRef.current.includes(hoveredShape.id);
+          const targetIds = isSelected ? selectedIdsRef.current : [hoveredShape.id];
+
+          setShapes((prev) =>
+            prev.map((s) => {
+              if (!targetIds.includes(s.id) || s.isLocked) return s;
+
+              const currentIndex = SIZES.indexOf(s.size);
+              const nextIndex = isIncreasing
+                ? Math.min(SIZES.length - 1, (currentIndex === -1 ? 1 : currentIndex) + 1)
+                : Math.max(0, (currentIndex === -1 ? 1 : currentIndex) - 1);
+              const newSize = SIZES[nextIndex];
+
+              if (s.type === 'text') {
+                const currentFont = s.fontSize || STROKE_SIZES[s.size]?.fontSize || 24;
+                const newFont = isIncreasing ? Math.min(144, currentFont + 4) : Math.max(10, currentFont - 4);
+                let newW = s.width;
+                let newH = s.height;
+                let newX = s.x;
+
+                if (s.autoWidth) {
+                  const measured = measureTextDimensions(s.text || 'Text', newFont, s.font);
+                  newW = measured.width;
+                  newH = measured.height;
+                  const anchorX = s.anchorX ?? (s.textAlign === 'center' ? s.x + s.width / 2 : s.textAlign === 'right' ? s.x + s.width : s.x);
+                  if (s.textAlign === 'center') newX = anchorX - newW / 2;
+                  else if (s.textAlign === 'right') newX = anchorX - newW;
+                  else newX = anchorX;
+                }
+
+                return {
+                  ...s,
+                  size: newSize,
+                  fontSize: newFont,
+                  width: newW,
+                  height: newH,
+                  x: newX,
+                };
+              }
+
+              return {
+                ...s,
+                size: newSize,
+              };
+            }),
+            false
+          );
+          pushHistoryAfterWheel();
+        }
+        return;
+      }
+
+      // 2. HOVERED OBJECT + CTRL + SCROLL -> RESIZE OBJECT (GETS SMALLER OR BIGGER)
+      // "if the user hovers an object, holds ctrl, and scrolls, the object get's smaller or bigger."
+      if (isCtrl && hoveredShape && !hoveredShape.isLocked) {
+        const factor = e.deltaY < 0 ? 1.06 : 0.94; // scroll up = bigger, scroll down = smaller
+        const isSelected = selectedIdsRef.current.includes(hoveredShape.id);
+        const targetIds = isSelected ? selectedIdsRef.current : [hoveredShape.id];
+        const targetShapes = currentShapes.filter((s) => targetIds.includes(s.id));
+        const combinedBounds = getCombinedBounds(targetShapes) || getShapeBounds(hoveredShape);
+        const centerPt: Point = { x: combinedBounds.centerX, y: combinedBounds.centerY };
+
+        setShapes((prev) =>
+          prev.map((s) => {
+            if (!targetIds.includes(s.id) || s.isLocked) return s;
+
+            const newX = centerPt.x + (s.x - centerPt.x) * factor;
+            const newY = centerPt.y + (s.y - centerPt.y) * factor;
+            const newW = Math.max(10, s.width * factor);
+            const newH = Math.max(10, s.height * factor);
+
+            let newPoints = s.points;
+            if (s.points && s.points.length > 0) {
+              newPoints = s.points.map((p) => ({
+                ...p,
+                x: p.x * factor,
+                y: p.y * factor,
+              }));
+            }
+
+            let newFontSize = s.fontSize;
+            let newAnchorX = s.anchorX;
+            let newAnchorY = s.anchorY;
+
+            if (s.type === 'text') {
+              const baseFont = s.fontSize || STROKE_SIZES[s.size]?.fontSize || 24;
+              newFontSize = Math.max(8, Math.round(baseFont * factor));
+              if (s.anchorX !== undefined) {
+                newAnchorX = centerPt.x + (s.anchorX - centerPt.x) * factor;
+              }
+              if (s.anchorY !== undefined) {
+                newAnchorY = centerPt.y + (s.anchorY - centerPt.y) * factor;
+              }
+            }
+
+            return {
+              ...s,
+              x: newX,
+              y: newY,
+              width: newW,
+              height: newH,
+              fontSize: newFontSize,
+              points: newPoints,
+              anchorX: newAnchorX,
+              anchorY: newAnchorY,
+            };
+          }),
+          false
+        );
+        pushHistoryAfterWheel();
+        return;
+      }
+
+      // 3. CTRL + SCROLL OVER EMPTY CANVAS -> CANVAS ZOOM
+      if (isCtrl) {
         const zoomDelta = -e.deltaY * 0.006;
         const factor = Math.exp(zoomDelta);
         const mouseX = e.clientX;
@@ -126,14 +293,26 @@ export const InfiniteCanvas: React.FC = () => {
             z: newZ,
           };
         });
-      } else {
-        // Pan on normal scroll
+        return;
+      }
+
+      // 4. SHIFT + SCROLL -> HORIZONTAL CANVAS SCROLL
+      // "if the user scrolls using shift (on any place on the canvas, the app scrolls horizontally"
+      if (isShift) {
+        const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
         setCamera((prev) => ({
           ...prev,
-          x: prev.x - e.deltaX,
-          y: prev.y - e.deltaY,
+          x: prev.x - delta,
         }));
+        return;
       }
+
+      // 5. WITHOUT SHIFT -> VERTICAL CANVAS SCROLL
+      // "and without shift, it scrolls vertically on the canvas"
+      setCamera((prev) => ({
+        ...prev,
+        y: prev.y - e.deltaY,
+      }));
     };
 
     container.addEventListener('wheel', onWheelNative, { passive: false });

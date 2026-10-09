@@ -36,13 +36,15 @@ export const ShortcutsModal: React.FC = () => {
     {
       title: 'View & Navigation',
       items: [
-        { label: 'Pan Canvas', keys: ['Space + Drag', 'Wheel'] },
-        { label: 'Zoom Canvas', keys: ['Ctrl + Scroll', 'Pinch'] },
+        { label: 'Pan Canvas', keys: ['Space + Drag'] },
+        { label: 'Vertical Scroll', keys: ['Scroll'] },
+        { label: 'Horizontal Scroll', keys: ['Shift + Scroll'] },
+        { label: 'Zoom Canvas', keys: ['Ctrl + Scroll'] },
+        { label: 'Resize Object', keys: ['Ctrl + Scroll (Hovered)'] },
+        { label: 'Change Thickness', keys: ['Alt + Scroll (Hovered)'] },
         { label: 'Zoom In / Out', keys: ['Cmd / Ctrl', '+ / -'] },
-        { label: 'Pinch Zoom', keys: ['Cmd', 'Wheel'] },
         { label: 'Zoom to 100%', keys: ['Shift', '0'] },
         { label: 'Zoom to Fit All', keys: ['Shift', '1'] },
-        { label: 'Zoom to Selection', keys: ['Shift', '2'] },
       ],
     },
     {
