@@ -6,7 +6,7 @@ import { ShapeRenderer } from './ShapeRenderer';
 import { SelectionBox } from './SelectionBox';
 import { AlignmentGuides } from './AlignmentGuides';
 import { LaserTrail } from './LaserTrail';
-import { STICKY_COLORS, STROKE_SIZES } from '../../utils/constants';
+import { STICKY_COLORS, STROKE_SIZES, COLORS } from '../../utils/constants';
 import { measureTextDimensions } from '../../utils/textMeasure';
 
 interface MarqueeBox {
@@ -73,6 +73,9 @@ export const InfiniteCanvas: React.FC = () => {
   const editingTextIdRef = useRef(editingTextId);
   editingTextIdRef.current = editingTextId;
   const altWheelAccumulatorRef = useRef(0);
+  const shiftWheelAccumulatorRef = useRef(0);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const wheelHistoryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const pushHistoryAfterWheel = () => {
@@ -144,29 +147,21 @@ export const InfiniteCanvas: React.FC = () => {
       const isShift = e.shiftKey;
       const currentCamera = cameraRef.current;
       const currentShapes = shapesRef.current;
-      const mouseCanvasPt = screenToCanvas({ x: e.clientX, y: e.clientY }, currentCamera);
+      const selectedShapes = currentShapes.filter(
+        (s) => selectedIdsRef.current.includes(s.id) && !s.isLocked
+      );
+      const hasSelected = selectedShapes.length > 0;
 
-      // Find if an object is hovered under the cursor (topmost shape first)
-      const hoveredShape = [...currentShapes].reverse().find((s) => {
-        const bounds = getShapeBounds(s);
-        return (
-          mouseCanvasPt.x >= bounds.minX &&
-          mouseCanvasPt.x <= bounds.maxX &&
-          mouseCanvasPt.y >= bounds.minY &&
-          mouseCanvasPt.y <= bounds.maxY
-        );
-      });
-
-      // 1. HOVERED OBJECT + ALT + SCROLL -> CHANGE THICKNESS
+      // 1. SELECTED OBJECT(S) + ALT + SCROLL -> CHANGE THICKNESS
       // "If they do it holding alt, it changes the thickness for the objects that support that (text,shapes...)"
-      if (isAlt && hoveredShape && !hoveredShape.isLocked) {
+      // "the object should be selected (clicked on) then a scroll with ctrl or alt, will do the things they're supposed to (no need to hover over the object)."
+      if (isAlt && hasSelected) {
         altWheelAccumulatorRef.current += e.deltaY;
         if (Math.abs(altWheelAccumulatorRef.current) >= 20) {
           const isIncreasing = altWheelAccumulatorRef.current < 0; // scroll up = increase thickness
           altWheelAccumulatorRef.current = 0;
 
-          const isSelected = selectedIdsRef.current.includes(hoveredShape.id);
-          const targetIds = isSelected ? selectedIdsRef.current : [hoveredShape.id];
+          const targetIds = selectedIdsRef.current;
 
           setShapes((prev) =>
             prev.map((s) => {
@@ -179,8 +174,7 @@ export const InfiniteCanvas: React.FC = () => {
               const newSize = SIZES[nextIndex];
 
               if (s.type === 'text') {
-                const currentFont = s.fontSize || STROKE_SIZES[s.size]?.fontSize || 24;
-                const newFont = isIncreasing ? Math.min(144, currentFont + 4) : Math.max(10, currentFont - 4);
+                const newFont = STROKE_SIZES[newSize]?.fontSize || 24;
                 let newW = s.width;
                 let newH = s.height;
                 let newX = s.x;
@@ -189,19 +183,32 @@ export const InfiniteCanvas: React.FC = () => {
                   const measured = measureTextDimensions(s.text || 'Text', newFont, s.font);
                   newW = measured.width;
                   newH = measured.height;
-                  const anchorX = s.anchorX ?? (s.textAlign === 'center' ? s.x + s.width / 2 : s.textAlign === 'right' ? s.x + s.width : s.x);
+                  const anchorX =
+                    s.anchorX ??
+                    (s.textAlign === 'center'
+                      ? s.x + s.width / 2
+                      : s.textAlign === 'right'
+                      ? s.x + s.width
+                      : s.x);
                   if (s.textAlign === 'center') newX = anchorX - newW / 2;
                   else if (s.textAlign === 'right') newX = anchorX - newW;
                   else newX = anchorX;
+
+                  return {
+                    ...s,
+                    size: newSize,
+                    fontSize: newFont,
+                    width: newW,
+                    height: newH,
+                    x: newX,
+                    anchorX,
+                  };
                 }
 
                 return {
                   ...s,
                   size: newSize,
                   fontSize: newFont,
-                  width: newW,
-                  height: newH,
-                  x: newX,
                 };
               }
 
@@ -217,48 +224,137 @@ export const InfiniteCanvas: React.FC = () => {
         return;
       }
 
-      // 2. HOVERED OBJECT + CTRL + SCROLL -> RESIZE OBJECT (GETS SMALLER OR BIGGER)
-      // "if the user hovers an object, holds ctrl, and scrolls, the object get's smaller or bigger."
-      if (isCtrl && hoveredShape && !hoveredShape.isLocked) {
+      // 2. SELECTED OBJECT(S) + CTRL + SCROLL -> RESIZE OBJECT(S)
+      // "the object should be selected (clicked on) then a scroll with ctrl or alt, will do the things they're supposed to (no need to hover over the object)."
+      // "changing the size of shapes using the scroll wheel messes with their transforming and their anchor points, fix that."
+      if (isCtrl && hasSelected) {
         const factor = e.deltaY < 0 ? 1.06 : 0.94; // scroll up = bigger, scroll down = smaller
-        const isSelected = selectedIdsRef.current.includes(hoveredShape.id);
-        const targetIds = isSelected ? selectedIdsRef.current : [hoveredShape.id];
-        const targetShapes = currentShapes.filter((s) => targetIds.includes(s.id));
-        const combinedBounds = getCombinedBounds(targetShapes) || getShapeBounds(hoveredShape);
+        const combinedBounds = getCombinedBounds(selectedShapes);
+        if (!combinedBounds) return;
         const centerPt: Point = { x: combinedBounds.centerX, y: combinedBounds.centerY };
 
         setShapes((prev) =>
           prev.map((s) => {
-            if (!targetIds.includes(s.id) || s.isLocked) return s;
+            if (!selectedIdsRef.current.includes(s.id) || s.isLocked) return s;
 
-            const newX = centerPt.x + (s.x - centerPt.x) * factor;
-            const newY = centerPt.y + (s.y - centerPt.y) * factor;
-            const newW = Math.max(10, s.width * factor);
-            const newH = Math.max(10, s.height * factor);
+            // 2a. Lines & Arrows: scale anchors directly preserving vector & direction
+            if (s.type === 'arrow' || s.type === 'line') {
+              const p1 = { x: s.x, y: s.y };
+              const p2 = { x: s.x + s.width, y: s.y + s.height };
+              const newP1X = centerPt.x + (p1.x - centerPt.x) * factor;
+              const newP1Y = centerPt.y + (p1.y - centerPt.y) * factor;
+              const newP2X = centerPt.x + (p2.x - centerPt.x) * factor;
+              const newP2Y = centerPt.y + (p2.y - centerPt.y) * factor;
+              const newBend = s.bend !== undefined ? s.bend * factor : undefined;
 
-            let newPoints = s.points;
-            if (s.points && s.points.length > 0) {
-              newPoints = s.points.map((p) => ({
+              return {
+                ...s,
+                x: newP1X,
+                y: newP1Y,
+                width: newP2X - newP1X,
+                height: newP2Y - newP1Y,
+                bend: newBend,
+              };
+            }
+
+            // 2b. Freehand Draw & Highlighter: scale origin and relative points
+            if (s.type === 'draw' || s.type === 'highlighter') {
+              const newX = centerPt.x + (s.x - centerPt.x) * factor;
+              const newY = centerPt.y + (s.y - centerPt.y) * factor;
+              const newPoints = (s.points || []).map((p) => ({
                 ...p,
                 x: p.x * factor,
                 y: p.y * factor,
               }));
+
+              return {
+                ...s,
+                x: newX,
+                y: newY,
+                width: Math.max(2, s.width * factor),
+                height: Math.max(2, s.height * factor),
+                points: newPoints,
+              };
             }
 
-            let newFontSize = s.fontSize;
-            let newAnchorX = s.anchorX;
-            let newAnchorY = s.anchorY;
-
+            // 2c. Text shapes: scale font size, update anchor points, re-measure dimensions
             if (s.type === 'text') {
               const baseFont = s.fontSize || STROKE_SIZES[s.size]?.fontSize || 24;
-              newFontSize = Math.max(8, Math.round(baseFont * factor));
-              if (s.anchorX !== undefined) {
-                newAnchorX = centerPt.x + (s.anchorX - centerPt.x) * factor;
-              }
-              if (s.anchorY !== undefined) {
-                newAnchorY = centerPt.y + (s.anchorY - centerPt.y) * factor;
+              const newFontSize = Math.max(8, Math.min(288, Math.round(baseFont * factor)));
+              const fontName = s.font || 'vazir';
+
+              if (s.autoWidth) {
+                const measured = measureTextDimensions(s.text || 'Text', newFontSize, fontName);
+                const newW = measured.width;
+                const newH = measured.height;
+
+                const origAnchorX =
+                  s.anchorX ??
+                  (s.textAlign === 'center'
+                    ? s.x + s.width / 2
+                    : s.textAlign === 'right'
+                    ? s.x + s.width
+                    : s.x);
+                const origAnchorY = s.anchorY ?? s.y;
+
+                const newAnchorX = centerPt.x + (origAnchorX - centerPt.x) * factor;
+                const newAnchorY = centerPt.y + (origAnchorY - centerPt.y) * factor;
+
+                let newX = newAnchorX;
+                if (s.textAlign === 'center') {
+                  newX = newAnchorX - newW / 2;
+                } else if (s.textAlign === 'right') {
+                  newX = newAnchorX - newW;
+                }
+                const newY = newAnchorY;
+
+                return {
+                  ...s,
+                  fontSize: newFontSize,
+                  width: newW,
+                  height: newH,
+                  x: newX,
+                  y: newY,
+                  anchorX: newAnchorX,
+                  anchorY: newAnchorY,
+                };
+              } else {
+                const newW = Math.max(20, s.width * factor);
+                const newH = Math.max(20, s.height * factor);
+                const newX = centerPt.x + (s.x - centerPt.x) * factor;
+                const newY = centerPt.y + (s.y - centerPt.y) * factor;
+                const newAnchorX = s.anchorX !== undefined ? centerPt.x + (s.anchorX - centerPt.x) * factor : undefined;
+                const newAnchorY = s.anchorY !== undefined ? centerPt.y + (s.anchorY - centerPt.y) * factor : undefined;
+
+                return {
+                  ...s,
+                  fontSize: newFontSize,
+                  width: newW,
+                  height: newH,
+                  x: newX,
+                  y: newY,
+                  anchorX: newAnchorX,
+                  anchorY: newAnchorY,
+                };
               }
             }
+
+            // 2d. Geometric shapes (rectangle, ellipse, diamond, triangle, sticky, frame, image, etc.)
+            const origCenterX = s.x + s.width / 2;
+            const origCenterY = s.y + s.height / 2;
+            const newCenterX = centerPt.x + (origCenterX - centerPt.x) * factor;
+            const newCenterY = centerPt.y + (origCenterY - centerPt.y) * factor;
+            const newW = Math.max(10, s.width * factor);
+            const newH = Math.max(10, s.height * factor);
+            const newX = newCenterX - newW / 2;
+            const newY = newCenterY - newH / 2;
+
+            let newFontSize = s.fontSize;
+            if (s.fontSize) {
+              newFontSize = Math.max(8, Math.min(288, Math.round(s.fontSize * factor)));
+            }
+            const newAnchorX = s.anchorX !== undefined ? centerPt.x + (s.anchorX - centerPt.x) * factor : undefined;
+            const newAnchorY = s.anchorY !== undefined ? centerPt.y + (s.anchorY - centerPt.y) * factor : undefined;
 
             return {
               ...s,
@@ -267,7 +363,6 @@ export const InfiniteCanvas: React.FC = () => {
               width: newW,
               height: newH,
               fontSize: newFontSize,
-              points: newPoints,
               anchorX: newAnchorX,
               anchorY: newAnchorY,
             };
@@ -278,7 +373,70 @@ export const InfiniteCanvas: React.FC = () => {
         return;
       }
 
-      // 3. CTRL + SCROLL OVER EMPTY CANVAS -> CANVAS ZOOM
+      // 3. SELECTED OBJECT(S) + SHIFT + SCROLL -> TOGGLE COLORS (IF SUPPORTED)
+      // "while an object is selected and the user scrolls holding shift, the object should toggle between colors (if supported)"
+      if (isShift && hasSelected) {
+        const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+        shiftWheelAccumulatorRef.current += delta;
+        if (Math.abs(shiftWheelAccumulatorRef.current) >= 20) {
+          const isNext = shiftWheelAccumulatorRef.current > 0;
+          shiftWheelAccumulatorRef.current = 0;
+
+          const isDark = themeRef.current === 'dark' || themeRef.current === 'midnight';
+          const targetIds = selectedIdsRef.current;
+          let lastColorChanged: string | null = null;
+
+          setShapes((prev) =>
+            prev.map((s) => {
+              if (!targetIds.includes(s.id) || s.isLocked) return s;
+
+              // Sticky note uses STICKY_COLORS palette
+              if (s.type === 'sticky') {
+                const currentIndex = STICKY_COLORS.findIndex(
+                  (c) => c.name === s.color || c.bg === s.color
+                );
+                const nextIndex = isNext
+                  ? (currentIndex + 1) % STICKY_COLORS.length
+                  : (currentIndex - 1 + STICKY_COLORS.length) % STICKY_COLORS.length;
+                const newColor = STICKY_COLORS[nextIndex >= 0 ? nextIndex : 0].name;
+                lastColorChanged = newColor;
+                return {
+                  ...s,
+                  color: newColor,
+                };
+              }
+
+              // Image does not support color
+              if (s.type === 'image') return s;
+
+              // All other shapes: text, draw, highlighter, line, arrow, rectangle, ellipse, diamond, triangle, star, cloud, bubble, frame
+              const currentIndex = COLORS.findIndex(
+                (c) => c.value === s.color || c.lightValue === s.color || c.darkValue === s.color || c.id === s.color
+              );
+              const nextIndex = isNext
+                ? (currentIndex + 1) % COLORS.length
+                : (currentIndex - 1 + COLORS.length) % COLORS.length;
+              const targetColorObj = COLORS[nextIndex >= 0 ? nextIndex : 0];
+              const newColor = isDark ? targetColorObj.darkValue : targetColorObj.lightValue;
+              lastColorChanged = newColor;
+
+              return {
+                ...s,
+                color: newColor,
+              };
+            }),
+            false
+          );
+
+          if (lastColorChanged) {
+            setCurrentStyle((prev) => ({ ...prev, color: lastColorChanged! }));
+          }
+          pushHistoryAfterWheel();
+        }
+        return;
+      }
+
+      // 4. CTRL + SCROLL OVER EMPTY CANVAS -> CANVAS ZOOM
       if (isCtrl) {
         const zoomDelta = -e.deltaY * 0.006;
         const factor = Math.exp(zoomDelta);
@@ -828,6 +986,39 @@ export const InfiniteCanvas: React.FC = () => {
     const initialBounds = initialBoundsRef.current;
     if (!handle || !initialBounds) return;
 
+    // Direct endpoint editing for arrows / lines with 'start' and 'end' handles
+    if (handle === 'start' || handle === 'end') {
+      const snapPt = snapToGrid ? { x: snapValue(canvasPt.x, 20), y: snapValue(canvasPt.y, 20) } : canvasPt;
+      setShapes(
+        (prev) =>
+          prev.map((s) => {
+            const initial = initialShapeStatesRef.current.get(s.id);
+            if (!initial) return s;
+            if (initial.type !== 'arrow' && initial.type !== 'line') return s;
+
+            if (handle === 'start') {
+              const endX = initial.x + initial.width;
+              const endY = initial.y + initial.height;
+              return {
+                ...s,
+                x: snapPt.x,
+                y: snapPt.y,
+                width: endX - snapPt.x,
+                height: endY - snapPt.y,
+              };
+            } else {
+              return {
+                ...s,
+                width: snapPt.x - initial.x,
+                height: snapPt.y - initial.y,
+              };
+            }
+          }),
+        false
+      );
+      return;
+    }
+
     let newMinX = initialBounds.minX;
     let newMinY = initialBounds.minY;
     let newMaxX = initialBounds.maxX;
@@ -869,18 +1060,87 @@ export const InfiniteCanvas: React.FC = () => {
           const relX = (initial.x - initialBounds.minX) * scaleX;
           const relY = (initial.y - initialBounds.minY) * scaleY;
 
-          let newFontSize = initial.fontSize || STROKE_SIZES[initial.size]?.fontSize || 24;
-          let newAutoWidth = initial.autoWidth;
+          // Lines & arrows
+          if (s.type === 'arrow' || s.type === 'line') {
+            return {
+              ...s,
+              x: newMinX + relX,
+              y: newMinY + relY,
+              width: initial.width * scaleX,
+              height: initial.height * scaleY,
+              bend: initial.bend !== undefined ? initial.bend * ((scaleX + scaleY) / 2) : undefined,
+            };
+          }
+
+          // Draw & highlighter
+          if (s.type === 'draw' || s.type === 'highlighter') {
+            const newPoints = (initial.points || []).map((p) => ({
+              ...p,
+              x: p.x * scaleX,
+              y: p.y * scaleY,
+            }));
+            return {
+              ...s,
+              x: newMinX + relX,
+              y: newMinY + relY,
+              width: Math.max(2, initial.width * scaleX),
+              height: Math.max(2, initial.height * scaleY),
+              points: newPoints,
+            };
+          }
+
+          // Text shapes
           if (s.type === 'text') {
             const baseFont = initial.fontSize || STROKE_SIZES[initial.size]?.fontSize || 24;
             const shouldScaleFont = isCtrlPressed ? !initial.autoScaleFont : (initial.autoScaleFont ?? true);
+            let newFontSize = baseFont;
+            let newAutoWidth = initial.autoWidth;
+
             if (shouldScaleFont) {
               const scaleVal = Math.max(0.2, (scaleX + scaleY) / 2);
-              newFontSize = Math.max(8, Math.round(baseFont * scaleVal));
+              newFontSize = Math.max(8, Math.min(288, Math.round(baseFont * scaleVal)));
             } else {
               newFontSize = baseFont;
               newAutoWidth = false;
             }
+
+            let newWidth = Math.max(10, initial.width * scaleX);
+            let newHeight = Math.max(10, initial.height * scaleY);
+            let newX = newMinX + relX;
+            let newAnchorX = initial.anchorX !== undefined ? newMinX + (initial.anchorX - initialBounds.minX) * scaleX : undefined;
+            const newAnchorY = initial.anchorY !== undefined ? newMinY + (initial.anchorY - initialBounds.minY) * scaleY : undefined;
+
+            if (newAutoWidth && shouldScaleFont) {
+              const measured = measureTextDimensions(initial.text || 'Text', newFontSize, initial.font || 'vazir');
+              newWidth = measured.width;
+              newHeight = measured.height;
+              const anchorX = newAnchorX ?? (initial.textAlign === 'center' ? newX + newWidth / 2 : initial.textAlign === 'right' ? newX + newWidth : newX);
+              newAnchorX = anchorX;
+              if (initial.textAlign === 'center') newX = anchorX - newWidth / 2;
+              else if (initial.textAlign === 'right') newX = anchorX - newWidth;
+              else newX = anchorX;
+            }
+
+            return {
+              ...s,
+              x: newX,
+              y: newMinY + relY,
+              width: newWidth,
+              height: newHeight,
+              fontSize: newFontSize,
+              autoWidth: newAutoWidth,
+              anchorX: newAnchorX,
+              anchorY: newAnchorY,
+            };
+          }
+
+          // Geometric shapes & other
+          const newAnchorX = initial.anchorX !== undefined ? newMinX + (initial.anchorX - initialBounds.minX) * scaleX : undefined;
+          const newAnchorY = initial.anchorY !== undefined ? newMinY + (initial.anchorY - initialBounds.minY) * scaleY : undefined;
+          let newFontSize = initial.fontSize;
+          if (initial.fontSize) {
+            const scaleVal = Math.max(0.2, (scaleX + scaleY) / 2);
+            newFontSize = Math.max(8, Math.min(288, Math.round(initial.fontSize * scaleVal)));
           }
 
           return {
@@ -890,7 +1150,8 @@ export const InfiniteCanvas: React.FC = () => {
             width: Math.max(10, initial.width * scaleX),
             height: Math.max(10, initial.height * scaleY),
             fontSize: newFontSize,
-            autoWidth: newAutoWidth,
+            anchorX: newAnchorX,
+            anchorY: newAnchorY,
           };
         }),
       false
